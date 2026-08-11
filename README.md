@@ -42,15 +42,20 @@ flowchart TD
 
 | 環節 | 工具 | 說明 |
 |---|---|---|
-| 模擬交易資料 | Python + Faker | 產生訂單、商品、客戶假資料，並模擬商品改價事件 |
+| 模擬交易資料 | Python + Faker | 產生訂單、商品、客戶假資料，並模擬商品改價事件；容器化執行 |
 | 交易資料庫 | PostgreSQL | 啟用邏輯複製 (logical replication) 供 CDC 使用 |
 | CDC | Debezium | 監聽 PostgreSQL WAL，捕捉 INSERT/UPDATE 事件 |
+| Kafka 叢集協調 | Zookeeper | 管理 Kafka broker 資訊 |
 | 事件流 | Kafka | 承接 Clickstream 事件與 CDC 變更事件 |
-| Bronze/Silver 儲存 | MinIO (S3 相容) + Parquet | 分層儲存；資料規模小，先以 Parquet + DuckDB |
+| Connector 執行框架 | Kafka Connect | 執行 Debezium PostgreSQL connector |
+| Bronze/Silver 儲存 | MinIO (S3 相容) + Parquet | 分層儲存；資料規模小，先以 Parquet + DuckDB 走完整個管線，Iceberg 留作後續加分項（見下方備註） |
 | 轉換 / 建模 | dbt + DuckDB | Gold 層星狀模型建構與資料品質測試 |
 | 排程 | Apache Airflow | 串接批次 API 拉取、觸發 dbt run |
 | 資料品質 | dbt tests + 自訂 reconciliation 測試 | 確保 Gold 層與 Bronze 層數字一致 |
 | 查詢展示 | Metabase | 視覺化營收趨勢與 SCD Type 2 正確性對比 |
+
+> **備註：為什麼不用 Iceberg**
+> Iceberg 的 schema evolution、time travel、partition pruning 等能力，在資料量大（百萬筆以上、多檔案、需要頻繁按時間範圍查詢）時才會發揮明顯價值。這個專案的資料規模小（測試資料約幾百筆），用 Parquet + DuckDB 查詢已經是毫秒級，加 Iceberg 不會帶來可感知的效能差異，反而會增加額外的維運複雜度（catalog 服務、版本相容性管理）。等核心邏輯（SCD、point-in-time join、reconciliation）都做完且穩定後，若有餘力會考慮把儲存格式升級成 Iceberg。
 
 ## 資料模型
 
@@ -98,14 +103,16 @@ fact_clickstream (event_id, customer_sk, product_sk, date_sk,
 
 每次 Gold 層跑完，驗證 `fact_order_items` 的營收加總與 Bronze 層原始資料加總的誤差是否在容許範圍內（例如 0.01%）。若超標則擋住，不讓本次結果流向下游——寧可提供昨天的舊資料，也不提供今天可能有誤的資料。
 
+## Gold 層儲存方式說明
+
+Gold 層資料實際落地存進一個本機的 `.duckdb` 檔案（透過 `dbt-duckdb` adapter），不是每次查詢都重新讀取 MinIO 上的 Parquet 檔案。這樣查詢時資料已經是常駐、整理好的格式，體感上更接近一般資料庫（如 ClickHouse）的查詢速度，也方便 Metabase 直接連線。
+
 ## 專案結構
 
 ```
 ecommerce-data-warehouse/
-├── data-generator/        # Faker 模擬資料生成腳本
-├── cdc/                   # Debezium 設定
-├── streaming/             # Kafka producer/consumer（clickstream）
-├── ingestion/             # 批次 API 拉取腳本（金流/物流模擬）
+├── data-generator/        # Faker 模擬資料生成腳本 + Dockerfile
+├── connector-config.json  # Debezium PostgreSQL connector 設定
 ├── dbt/                   # dbt models（Silver SCD 邏輯 + Gold 星狀模型）
 │   ├── models/
 │   │   ├── silver/
@@ -115,53 +122,44 @@ ecommerce-data-warehouse/
 ├── docker-compose.yml
 └── README.md
 ```
-## Gold 層儲存方式說明
 
-Gold 層資料實際落地存進一個本機的 `.duckdb` 檔案（透過 `dbt-duckdb` adapter），不是每次查詢都重新讀取 MinIO 上的 Parquet 檔案。這樣查詢時資料已經是常駐、整理好的格式，體感上更接近一般資料庫（如 ClickHouse）的查詢速度，也方便 Metabase 直接連線。
+## 快速開始
 
-## 快速開始（階段 1：Faker 資料生成 + PostgreSQL + MinIO + Bronze 層初始快照）
+整套環境已完全容器化，一行指令即可啟動全部服務（PostgreSQL、MinIO、Zookeeper、Kafka、Kafka Connect + Debezium、資料生成器）：
 
 ```bash
-docker compose up -d
+docker compose up -d --build
 docker compose ps
 ```
 
 啟動後：
-- PostgreSQL：`localhost:5432`（帳號 `ecom` / 密碼 `ecom_pw`，資料庫 `ecom_source`）
-- MinIO console：http://localhost:9001（帳號 `minioadmin` / 密碼 `minioadmin`）
-- MinIO 的 `bronze` bucket 由 `minio-init` container 自動建立，不需手動操作
+- **PostgreSQL**：`localhost:5432`（帳號 `ecom` / 密碼 `ecom_pw`，資料庫 `ecom_source`）
+- **MinIO console**：http://localhost:9001（帳號 `minioadmin` / 密碼 `minioadmin`），`bronze` bucket 由 `minio-init` 自動建立
+- **Kafka Connect REST API**：http://localhost:8083，Debezium PostgreSQL connector 由 `kafka-connect-init` 自動註冊
+- **資料生成器**：容器化執行，啟動後自動 seed 200 筆客戶、50 筆商品，並持續產生訂單、隨機模擬改價/客戶更新事件
 
-檢查 PostgreSQL 服務是否正常：
+檢查各項服務是否正常運作：
 
 ```bash
+# PostgreSQL 資料是否持續產生
 docker compose exec postgres psql -U ecom -d ecom_source -c "SELECT COUNT(*) FROM orders;"
+
+# Debezium connector 狀態是否為 RUNNING
+curl http://localhost:8083/connectors/ecom-postgres-connector/status
+
+# CDC 事件是否即時進入 Kafka
+# （在另一個終端機視窗執行下方指令監聽，接著改一筆商品價格觸發事件觀察）
+docker compose exec kafka kafka-console-consumer \
+  --bootstrap-server localhost:9092 \
+  --topic ecom.public.products
 ```
 
-啟動資料生成器（會持續產生訂單、隨機模擬改價/客戶更新事件）：
+## 開發筆記：CDC 實作過程中的關鍵問題
 
-```bash
-cd data-generator
-python3 -m venv venv
-source venv/bin/activate
-pip install -r requirements.txt   # 位於專案根目錄
-python3 generate.py
-```
-
-跑一段時間後（`Ctrl+C` 停止），執行一次性的 Bronze 層初始快照，把 PostgreSQL 現有資料匯出成 Parquet 並上傳到 MinIO：
-
-```bash
-python3 bronze_export.py
-```
-
-看到 log 顯示各表匯出筆數與上傳成功訊息，即完成 Bronze 層初始快照。
-
-## 開發階段
-
-- [ ] **階段 1**：Faker 資料生成 + PostgreSQL + Bronze 層初始快照（一次性批次匯出，補齊 CDC 監聽前已存在的資料）
-- [ ] **階段 2**：導入 Debezium + Kafka，CDC 事件即時進 Bronze；補上 Clickstream 事件流
-- [ ] **階段 3**：Silver 層 SCD Type 1 / Type 2 邏輯，含邊界案例測試（同日連續改價、CDC 延遲到達）
-- [ ] **階段 4**：dbt 建 Gold 層星狀模型 + point-in-time join + reconciliation 測試
-- [ ] **階段 5**：Airflow 排程整合（含批次 API 拉取）+ Metabase dashboard
+- **PostgreSQL `REPLICA IDENTITY`**：預設的 `DEFAULT` 模式下，UPDATE 事件的 `before` 欄位只會是 `null`（只靠主鍵識別被改的列，不會帶出舊值）。改成 `REPLICA IDENTITY FULL` 後才能拿到完整的舊資料，這對後續 Silver 層要做 SCD Type 2 邏輯是必要的——需要知道「改之前」的完整狀態才能正確判斷版本切換的時間點。
+- **Kafka 雙 listener 設定**：需要同時提供「本機連線」與「容器對容器」兩種位址（`PLAINTEXT` / `PLAINTEXT_INTERNAL`），否則本機工具連不上、或容器間互相連不上。
+- **為什麼沒有獨立的批次落地腳本**：Debezium 第一次啟動時的 initial snapshot，會自動把資料庫現有資料整批轉換成事件送進 Kafka，這個功能與原本規劃的「一次性批次匯出」腳本高度重疊，因此移除重複的批次腳本，統一由 CDC 管線處理歷史資料與即時變更。
+- **Decimal 型別編碼**：Kafka Connect 的 Decimal 型別（如 `list_price`）在原始訊息中是 Base64 編碼的 bytes，不是直接可讀的數字，需要在下游消費時解碼。
 
 ## 已知邊界案例（開發時需驗證）
 
