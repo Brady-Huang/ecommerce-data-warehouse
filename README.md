@@ -12,32 +12,21 @@
 
 ## 系統架構
 
-```
-┌──────────────┐   ┌───────────────┐   ┌──────────────────┐
-│  訂單/商品/客戶  │   │  Clickstream   │   │   外部 API 模擬     │
-│ (PostgreSQL)   │   │ (瀏覽/加購事件)  │   │  (金流/物流狀態)     │
-└──────┬───────┘   └──────┬────────┘   └──────┬───────────┘
-       │ CDC (Debezium)    │ Kafka Producer     │ 排程批次 (Airflow)
-       ▼                   ▼                    ▼
-┌────────────────────────────────────────────────────────┐
-│                   Bronze 層 (MinIO, Parquet)                │
-│              原始資料，append-only，不可修改                    │
-└───────────────────────┬──────────────────────────────────┘
-                         ▼
-┌────────────────────────────────────────────────────────┐
-│               Silver 層 (Iceberg)                           │
-│   清洗、去重、型別驗證、SCD Type 1 / Type 2 邏輯               │
-└───────────────────────┬──────────────────────────────────┘
-                         ▼
-┌────────────────────────────────────────────────────────┐
-│               Gold 層 (dbt + 星狀模型)                        │
-│   dim_products (SCD2) / dim_customers (SCD1) / dim_date      │
-│   fact_order_items / fact_clickstream                        │
-└───────────────────────┬──────────────────────────────────┘
-                         ▼
-                 資料品質驗證 (dbt tests / reconciliation)
-                         ▼
-                  BI 查詢層 (DuckDB + Metabase)
+```mermaid
+flowchart TD
+    A["訂單/商品/客戶<br/>(PostgreSQL)"] -->|"CDC (Debezium)"| D
+    B["Clickstream<br/>(瀏覽/加購事件)"] -->|"Kafka Producer"| D
+    C["外部 API 模擬<br/>(金流/物流狀態)"] -->|"排程批次 (Airflow)"| D
+
+    D["Bronze 層 (MinIO, Parquet)<br/>原始資料，append-only，不可修改"] --> E
+
+    E["Silver 層 (Iceberg)<br/>清洗、去重、型別驗證、SCD Type 1 / Type 2 邏輯"] --> F
+
+    F["Gold 層 (dbt + 星狀模型)<br/>dim_products (SCD2) / dim_customers (SCD1) / dim_date<br/>fact_order_items / fact_clickstream"] --> G
+
+    G["資料品質驗證 (dbt tests / reconciliation)"] --> H
+
+    H["BI 查詢層 (DuckDB + Metabase)"]
 ```
 
 ## 技術選型
