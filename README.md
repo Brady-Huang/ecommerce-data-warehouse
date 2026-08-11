@@ -22,7 +22,7 @@ flowchart TD
 
     E["Silver 層 (Iceberg)<br/>清洗、去重、型別驗證、SCD Type 1 / Type 2 邏輯"] --> F
 
-    F["Gold 層 (dbt + 星狀模型)<br/>dim_products (SCD2) / dim_customers (SCD1) / dim_date<br/>fact_order_items / fact_clickstream"] --> G
+    F["Gold 層 (dbt + 星狀模型)<br/>dim_products (SCD2) / dim_customers (SCD1) / dim_date<br/><br/>fact_order_items / fact_clickstream"] --> G
 
     G["資料品質驗證 (dbt tests / reconciliation)"] --> H
 
