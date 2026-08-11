@@ -20,7 +20,7 @@ flowchart TD
 
     D["Bronze 層<br/>MinIO, Parquet"] --> E
 
-    E["Silver 層<br/>Iceberg, SCD 邏輯"] --> F
+    E["Silver 層<br/>Parquet, SCD 邏輯"] --> F
 
     F["Gold 層<br/>dbt 星狀模型"] --> G
 
@@ -33,7 +33,7 @@ flowchart TD
 
 - **來源層**：訂單/商品/客戶（PostgreSQL，透過 CDC）、Clickstream（瀏覽/加購事件，透過 Kafka Producer）、外部 API 模擬（金流/物流狀態，透過 Airflow 排程批次）
 - **Bronze 層**（MinIO, Parquet）：原始資料，append-only，不可修改
-- **Silver 層**（Iceberg）：清洗、去重、型別驗證、SCD Type 1 / Type 2 邏輯
+- **Silver 層**（Parquet）：清洗、去重、型別驗證、SCD Type 1 / Type 2 邏輯
 - **Gold 層**（dbt + 星狀模型）：`dim_products`（SCD2）/ `dim_customers`（SCD1）/ `dim_date`；`fact_order_items` / `fact_clickstream`
 - **資料品質驗證**：dbt tests / reconciliation
 - **BI 查詢層**：DuckDB + Metabase
@@ -46,7 +46,7 @@ flowchart TD
 | 交易資料庫 | PostgreSQL | 啟用邏輯複製 (logical replication) 供 CDC 使用 |
 | CDC | Debezium | 監聽 PostgreSQL WAL，捕捉 INSERT/UPDATE 事件 |
 | 事件流 | Kafka | 承接 Clickstream 事件與 CDC 變更事件 |
-| Bronze/Silver 儲存 | MinIO (S3 相容) + Apache Iceberg | 分層儲存，Iceberg 提供 schema evolution 與 time travel |
+| Bronze/Silver 儲存 | MinIO (S3 相容) + Parquet | 分層儲存；資料規模小，先以 Parquet + DuckDB |
 | 轉換 / 建模 | dbt + DuckDB | Gold 層星狀模型建構與資料品質測試 |
 | 排程 | Apache Airflow | 串接批次 API 拉取、觸發 dbt run |
 | 資料品質 | dbt tests + 自訂 reconciliation 測試 | 確保 Gold 層與 Bronze 層數字一致 |
@@ -115,6 +115,45 @@ ecommerce-data-warehouse/
 ├── docker-compose.yml
 └── README.md
 ```
+## Gold 層儲存方式說明
+
+Gold 層資料實際落地存進一個本機的 `.duckdb` 檔案（透過 `dbt-duckdb` adapter），不是每次查詢都重新讀取 MinIO 上的 Parquet 檔案。這樣查詢時資料已經是常駐、整理好的格式，體感上更接近一般資料庫（如 ClickHouse）的查詢速度，也方便 Metabase 直接連線。
+
+## 快速開始（階段 1：Faker 資料生成 + PostgreSQL + MinIO + Bronze 層初始快照）
+
+```bash
+docker compose up -d
+docker compose ps
+```
+
+啟動後：
+- PostgreSQL：`localhost:5432`（帳號 `ecom` / 密碼 `ecom_pw`，資料庫 `ecom_source`）
+- MinIO console：http://localhost:9001（帳號 `minioadmin` / 密碼 `minioadmin`）
+- MinIO 的 `bronze` bucket 由 `minio-init` container 自動建立，不需手動操作
+
+檢查 PostgreSQL 服務是否正常：
+
+```bash
+docker compose exec postgres psql -U ecom -d ecom_source -c "SELECT COUNT(*) FROM orders;"
+```
+
+啟動資料生成器（會持續產生訂單、隨機模擬改價/客戶更新事件）：
+
+```bash
+cd data-generator
+python3 -m venv venv
+source venv/bin/activate
+pip install -r requirements.txt   # 位於專案根目錄
+python3 generate.py
+```
+
+跑一段時間後（`Ctrl+C` 停止），執行一次性的 Bronze 層初始快照，把 PostgreSQL 現有資料匯出成 Parquet 並上傳到 MinIO：
+
+```bash
+python3 bronze_export.py
+```
+
+看到 log 顯示各表匯出筆數與上傳成功訊息，即完成 Bronze 層初始快照。
 
 ## 開發階段
 
