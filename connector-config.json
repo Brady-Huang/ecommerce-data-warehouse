@@ -1,0 +1,15 @@
+{
+  "name": "ecom-postgres-connector",
+  "config": {
+    "connector.class": "io.debezium.connector.postgresql.PostgresConnector",
+    "database.hostname": "postgres",
+    "database.port": "5432",
+    "database.user": "ecom",
+    "database.password": "ecom_pw",
+    "database.dbname": "ecom_source",
+    "topic.prefix": "ecom",
+    "plugin.name": "pgoutput",
+    "publication.name": "ecom_publication",
+    "slot.name": "ecom_slot"
+  }
+}

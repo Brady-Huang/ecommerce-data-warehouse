@@ -18,7 +18,21 @@ services:
     volumes:
       - ./data-generator/init.sql:/docker-entrypoint-initdb.d/init.sql
       - pg_data:/var/lib/postgresql/data
-
+  
+  data-generator:
+    build:
+      context: .
+      dockerfile: data-generator/Dockerfile
+    depends_on:
+      postgres:
+        condition: service_started
+    environment:
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+      POSTGRES_USER: ecom
+      POSTGRES_PASSWORD: ecom_pw
+      POSTGRES_DB: ecom_source
+  
   minio:
     image: minio/minio:latest
     environment:
@@ -44,6 +58,75 @@ services:
       /bin/sh -c "
       mc alias set local http://minio:9000 minioadmin minioadmin;
       mc mb local/bronze --ignore-existing;
+      exit 0;
+      "
+  zookeeper:
+    image: confluentinc/cp-zookeeper:7.4.0
+    environment: 
+      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_TICK_TIME: 2000
+    ports:
+      - "2181:2181"
+    healthcheck:
+      test: ["CMD-SHELL", "echo stat | nc localhost 2181 || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+  
+  kafka:
+    image: confluentinc/cp-kafka:7.4.0
+    depends_on:
+      zookeeper:
+        condition: service_healthy
+    ports:
+      - "9092:9092"
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      KAFKA_LISTENERS:
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://localhost:9092,PLAINTEXT_INTERNAL://kafka:29092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_INTERNAL:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT_INTERNAL
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+    healthcheck:
+      test: ["CMD-SHELL", "nc -z localhost 9092 || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+  
+  kafka-connect:
+    image: debezium/connect:2.5
+    depends_on:
+      kafka:
+        condition: service_healthy
+      postgres:
+        condition: service_started
+    environment:
+      BOOTSTRAP_SERVERS: kafka:29092
+      GROUP_ID: 1
+      CONFIG_STORAGE_TOPIC: connect-configs
+      OFFSET_STORAGE_TOPIC: connect-offsets
+      STATUS_STORAGE_TOPIC: connect-status
+    ports:
+      - "8083:8083"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8083/ || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+
+  kafka-connect-init:
+    image: curlimages/curl:latest
+    depends_on:
+      kafka-connect:
+        condition: service_healthy
+    volumes:
+      - ./connector-config.json:/connector-config.json
+    entrypoint: >
+      /bin/sh -c "
+      curl -X POST -H 'Content-Type: application/json' --data @/connector-config.json http://kafka-connect:8083/connectors;
       exit 0;
       "
 
