@@ -1,0 +1,6 @@
+.env
+tmp_export/
+__pycache__/
+*.pyc
+venv/
+*.egg-info/
