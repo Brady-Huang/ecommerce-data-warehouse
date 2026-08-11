@@ -14,20 +14,29 @@
 
 ```mermaid
 flowchart TD
-    A["訂單/商品/客戶<br/>(PostgreSQL)"] -->|"CDC (Debezium)"| D
-    B["Clickstream<br/>(瀏覽/加購事件)"] -->|"Kafka Producer"| D
-    C["外部 API 模擬<br/>(金流/物流狀態)"] -->|"排程批次 (Airflow)"| D
+    A["訂單/商品/客戶<br/>PostgreSQL"] -->|CDC Debezium| D
+    B["Clickstream<br/>瀏覽/加購事件"] -->|Kafka Producer| D
+    C["外部 API 模擬<br/>金流/物流狀態"] -->|排程批次 Airflow| D
 
-    D["Bronze 層 (MinIO, Parquet)<br/>原始資料，append-only，不可修改"] --> E
+    D["Bronze 層<br/>MinIO, Parquet"] --> E
 
-    E["Silver 層 (Iceberg)<br/>清洗、去重、型別驗證、SCD Type 1 / Type 2 邏輯"] --> F
+    E["Silver 層<br/>Iceberg, SCD 邏輯"] --> F
 
-    F["Gold 層 (dbt + 星狀模型)<br/>dim_products (SCD2) / dim_customers (SCD1) / dim_date<br/>fact_order_items / fact_clickstream"] --> G
+    F["Gold 層<br/>dbt 星狀模型"] --> G
 
-    G["資料品質驗證 (dbt tests / reconciliation)"] --> H
+    G["資料品質驗證<br/>dbt tests"] --> H
 
-    H["BI 查詢層 (DuckDB + Metabase)"]
+    H["BI 查詢層<br/>DuckDB + Metabase"]
 ```
+
+**各層細節：**
+
+- **來源層**：訂單/商品/客戶（PostgreSQL，透過 CDC）、Clickstream（瀏覽/加購事件，透過 Kafka Producer）、外部 API 模擬（金流/物流狀態，透過 Airflow 排程批次）
+- **Bronze 層**（MinIO, Parquet）：原始資料，append-only，不可修改
+- **Silver 層**（Iceberg）：清洗、去重、型別驗證、SCD Type 1 / Type 2 邏輯
+- **Gold 層**（dbt + 星狀模型）：`dim_products`（SCD2）/ `dim_customers`（SCD1）/ `dim_date`；`fact_order_items` / `fact_clickstream`
+- **資料品質驗證**：dbt tests / reconciliation
+- **BI 查詢層**：DuckDB + Metabase
 
 ## 技術選型
 
